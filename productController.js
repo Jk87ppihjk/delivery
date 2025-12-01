@@ -1,4 +1,4 @@
-// productController.js (Corrigido com Rotas Separadas para Admin e Público)
+// productController.js (FINAL E CORRIGIDO)
 
 require('dotenv').config();
 const express = require('express');
@@ -14,16 +14,22 @@ const ITEMS_TABLE = 'imagens_produto';
 
 // ====================================================================
 // A. Rota: CRIAR Produto (COM UPLOAD DE MÚLTIPLAS IMAGENS)
+// Requer autenticação e permissão de 'gerente' ou superior.
 // ====================================================================
 productRouter.post('/', 
     authMiddleware, 
     checkPermission('gerente'), 
-    upload.array('imagens', 10), 
+    upload.array('imagens', 10), // Usa Multer para o campo 'imagens', até 10 arquivos
     async (req, res) => {
 
-    const { nome, descricao, preco, categoria, disponivel = true } = req.body;
+    // Dados de texto vêm em req.body
+    const { nome, descricao, preco, categoria } = req.body;
+    
+    // CORREÇÃO CRÍTICA: Converte a string 'true'/'false' em um booleano JavaScript.
+    const disponivelBoolean = req.body.disponivel === 'true'; 
+
     const created_by = req.user.id;
-    const files = req.files; 
+    const files = req.files; // Arquivos enviados (buffers)
 
     if (!nome || !preco) {
         return res.status(400).json({ message: 'Nome e Preço são campos obrigatórios.' });
@@ -31,6 +37,7 @@ productRouter.post('/',
     
     let connection;
     try {
+        // 1. Validação
         const precoNumerico = parseFloat(preco);
         if (isNaN(precoNumerico)) {
              return res.status(400).json({ message: 'Preço deve ser um valor numérico.' });
@@ -39,22 +46,26 @@ productRouter.post('/',
         connection = await db.getConnection();
         await connection.query('START TRANSACTION');
 
+        // 2. Criação do Produto Principal
         const productSql = `
             INSERT INTO ${TABLE} (nome, descricao, preco, categoria, disponivel, created_by) 
             VALUES (?, ?, ?, ?, ?, ?)
         `;
-        const productParams = [nome, descricao || null, precoNumerico, categoria || null, disponivel, created_by];
+        // Usa disponivelBoolean na lista de parâmetros
+        const productParams = [nome, descricao || null, precoNumerico, categoria || null, disponivelBoolean, created_by];
         
         const [productResult] = await connection.execute(productSql, productParams);
         const newProductId = productResult.insertId;
 
+        // 3. Upload e Inserção das Imagens
         if (files && files.length > 0) {
+            // Executa o upload de todos os arquivos em paralelo
             const uploadPromises = files.map(file => uploadToCloudinary(file));
             const imageResults = await Promise.all(uploadPromises);
 
             for (let i = 0; i < imageResults.length; i++) {
                 const img = imageResults[i];
-                const is_main = i === 0; 
+                const is_main = i === 0; // Define a primeira imagem como principal
                 
                 const imgSql = `
                     INSERT INTO ${ITEMS_TABLE} (produto_id, url, public_id, is_main)
@@ -64,7 +75,7 @@ productRouter.post('/',
             }
         }
 
-        await connection.query('COMMIT'); 
+        await connection.query('COMMIT'); // Finaliza a transação
 
         return res.status(201).json({ 
             message: 'Produto e imagens criados com sucesso!',
@@ -75,6 +86,7 @@ productRouter.post('/',
         if (connection) await connection.query('ROLLBACK');
         console.error('Erro ao criar produto e imagens:', error);
         
+        // Trata erros específicos do Multer/Validação
         if (error.message.includes('Apenas arquivos') || error.message.includes('too large') || error.message.includes('files')) {
             return res.status(400).json({ message: error.message });
         }
@@ -85,15 +97,14 @@ productRouter.post('/',
     }
 });
 
+
 // ====================================================================
-// B. Rota: LER/LISTAR Produtos para o Catálogo (Público)
+// B1. Rota: LER/LISTAR Produtos para o Catálogo (Público)
 // * Rota pública que lista apenas produtos DISPONÍVEIS.
 // ====================================================================
 productRouter.get('/', 
-    // ROTA PÚBLICA: NENHUM MIDDLEWARE DE AUTENTICAÇÃO
+    // ROTA PÚBLICA: Sem middleware de autenticação
     async (req, res) => {
-
-    console.log("[API_CATALOGO] Requisição de listagem de produtos públicos recebida.");
 
     try {
         // Query para selecionar APENAS produtos que estão disponíveis
@@ -107,8 +118,6 @@ productRouter.get('/',
         `;
         const result = await db.query(sql);
 
-        console.log(`[API_CATALOGO] ${result.rows.length} produtos disponíveis encontrados.`);
-
         return res.status(200).json({ 
             message: 'Lista de produtos para o catálogo retornada com sucesso.',
             produtos: result.rows
@@ -120,9 +129,9 @@ productRouter.get('/',
     }
 });
 
+
 // ====================================================================
 // B2. Rota: LER/LISTAR Todos os Produtos para o Admin (Gerenciamento)
-// * Esta é a rota que o painel 'admin_products.html' deve chamar.
 // * Mostra TODOS os produtos, disponíveis ou não.
 // ====================================================================
 productRouter.get('/admin', 
@@ -131,6 +140,7 @@ productRouter.get('/admin',
     async (req, res) => {
 
     try {
+        // Query para selecionar TODOS os produtos, independente do status 'disponivel'
         const sql = `
             SELECT 
                 p.*, 
@@ -158,13 +168,20 @@ productRouter.get('/admin',
 // C. Rota: LER Produto por ID
 // ====================================================================
 productRouter.get('/:id', 
-    // Pode ser protegido por compradorAuthMiddleware ou AdminAuthMiddleware
+    // Middleware para tentar autenticar como comprador ou admin
     (req, res, next) => {
-        const isPublicCall = req.headers.authorization && !req.headers.authorization.includes('adminToken');
-        if (isPublicCall) {
+        const authHeader = req.headers.authorization;
+        const isAdmin = authHeader && authHeader.includes('adminToken'); // Assumindo padrão de token/uso
+        
+        if (authHeader && isAdmin) {
+            return authMiddleware(req, res, next);
+        }
+        if (authHeader && !isAdmin) {
             return compradorAuthMiddleware(req, res, next);
         }
-        return authMiddleware(req, res, next); // Assume-se que o admin está buscando detalhes
+        
+        // Se não houver token, permite continuar (Pode ser ajustado se o produto for 100% público)
+        next(); 
     },
     async (req, res) => {
     
@@ -187,7 +204,7 @@ productRouter.get('/:id',
         }
         
         const produto = result.rows[0];
-        // JSON.parse pode falhar se o resultado for NULL.
+        // Adicionando tratamento para JSON nulo/falho
         try {
             produto.imagens = produto.imagens_json ? JSON.parse(produto.imagens_json) : [];
         } catch (e) {
@@ -206,6 +223,7 @@ productRouter.get('/:id',
 
 // ====================================================================
 // D. Rota: ATUALIZAR Produto (PUT)
+// Requer autenticação e permissão de 'gerente' ou superior.
 // ====================================================================
 productRouter.put('/:id', 
     authMiddleware, 
@@ -215,6 +233,7 @@ productRouter.put('/:id',
     const productId = req.params.id;
     const { nome, descricao, preco, categoria, disponivel } = req.body;
     
+    // Constrói a query dinamicamente
     let updates = [];
     let params = [];
 
@@ -227,7 +246,12 @@ productRouter.put('/:id',
         params.push(precoNumerico);
     }
     if (categoria !== undefined) { updates.push('categoria = ?'); params.push(categoria); }
-    if (disponivel !== undefined) { updates.push('disponivel = ?'); params.push(disponivel); }
+    if (disponivel !== undefined) { 
+        // Conversão de string 'true'/'false' para booleano aqui também
+        const disponivelBoolean = disponivel === 'true' || disponivel === true;
+        updates.push('disponivel = ?');
+        params.push(disponivelBoolean); 
+    }
 
     if (updates.length === 0) {
         return res.status(400).json({ message: 'Nenhum campo para atualizar fornecido.' });
@@ -255,6 +279,7 @@ productRouter.put('/:id',
 
 // ====================================================================
 // E. Rota: DELETAR Produto
+// Requer autenticação e permissão de 'gerente' ou superior.
 // ====================================================================
 productRouter.delete('/:id', 
     authMiddleware, 
@@ -268,6 +293,8 @@ productRouter.delete('/:id',
         
         connection = await db.getConnection();
         await connection.query('START TRANSACTION');
+
+        // A exclusão em cascata deve cuidar das imagens em 'imagens_produto'
 
         const deleteSql = `DELETE FROM ${TABLE} WHERE id = ?`;
         const [deleteResult] = await connection.execute(deleteSql, [productId]);
