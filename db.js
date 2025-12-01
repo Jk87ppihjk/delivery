@@ -1,4 +1,4 @@
-// db.js (Atualizado com Imagens_Produto)
+// db.js (Atualizado com Lógica de Migração de Colunas)
 
 require('dotenv').config();
 const mysql = require('mysql2/promise');
@@ -47,6 +47,31 @@ class Database {
         }
     }
 
+    // --- Lógica de Migração de Colunas (para atualizar tabelas existentes) ---
+    /**
+     * Verifica se uma coluna existe em uma tabela e a adiciona se estiver faltando.
+     */
+    async ensureColumnExists(tableName, columnName, definition) {
+        try {
+            // Verifica se a coluna já existe usando INFORMATION_SCHEMA
+            const [rows] = await pool.execute(
+                `SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = ? AND COLUMN_NAME = ? AND TABLE_SCHEMA = ?`,
+                [tableName, columnName, process.env.DB_NAME]
+            );
+
+            if (rows.length === 0) {
+                // A coluna não existe, então adiciona
+                console.log(`\n⚠️ Migração: Adicionando coluna '${columnName}' à tabela '${tableName}'...`);
+                await pool.execute(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+                console.log(`✅ Coluna '${columnName}' adicionada com sucesso.`);
+            }
+        } catch (error) {
+            // Loga o erro, mas continua.
+            console.error(`❌ ERRO durante a migração da coluna ${columnName} em ${tableName}:`, error.message);
+        }
+    }
+
+
     // --- Lógica de Criação de Tabelas (Migrations Simples) ---
     async setupDatabase() {
         console.log("🛠️ Verificando e criando tabelas...");
@@ -83,6 +108,7 @@ class Database {
                 FOREIGN KEY (created_by) REFERENCES administradores(id)
             );
             `,
+            // O CREATE TABLE agora inclui created_at e updated_at para novas instalações.
             `
             CREATE TABLE IF NOT EXISTS pedidos (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -91,6 +117,7 @@ class Database {
                 total DECIMAL(10, 2) NOT NULL,
                 endereco TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 FOREIGN KEY (comprador_id) REFERENCES compradores(id)
             );
             `,
@@ -114,7 +141,7 @@ class Database {
                 is_main BOOLEAN DEFAULT FALSE,
                 FOREIGN KEY (produto_id) REFERENCES produtos(id) ON DELETE CASCADE
             );
-            ` // <-- NOVO: Tabela para URLs de Imagens
+            ` 
         ];
 
         try {
@@ -122,6 +149,22 @@ class Database {
                 await pool.execute(sql);
             }
             console.log("✅ Estrutura do Banco de Dados verificada/criada.");
+
+            // -------------------------------------------------------------------
+            // INÍCIO DA MIGRAÇÃO PARA CORRIGIR TABELAS EXISTENTES:
+            // -------------------------------------------------------------------
+            console.log("\n🛠️ Executando migrações (correções de colunas ausentes)...");
+            
+            // 1. Garante a existência da coluna criada_at (que causou o erro)
+            await this.ensureColumnExists('pedidos', 'created_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
+            
+            // 2. Garante a existência da coluna updated_at (boa prática para gestão de status)
+            await this.ensureColumnExists('pedidos', 'updated_at', 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
+            
+            // -------------------------------------------------------------------
+            // FIM DA MIGRAÇÃO
+            // -------------------------------------------------------------------
+
             await this.createInitialAdmin(); 
         } catch (err) {
             console.error("❌ ERRO FATAL ao criar tabelas:", err);
