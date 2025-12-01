@@ -3,12 +3,21 @@
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
+const cors = require('cors'); // <-- NOVO: Importa o pacote CORS
 
 const { compradorRouter } = require('./compradorAuth');
 const { adminRouter } = require('./adminAuth');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// ------------------------------------------------------------------
+// CONFIGURAÇÃO CORS: LIBERA TODAS AS ORIGENS
+// Isso permitirá que seu frontend (127.0.0.1) se comunique com o backend (Render)
+// Em produção, você DEVE restringir isso ao seu FRONTEND_URL.
+// ------------------------------------------------------------------
+app.use(cors()); // <-- NOVO: Aplica o middleware CORS sem restrições
+// ------------------------------------------------------------------
 
 // Middlewares
 app.use(bodyParser.json());
