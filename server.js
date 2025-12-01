@@ -1,23 +1,19 @@
-// server.js
+// server.js (Atualizado)
 
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
-const cors = require('cors'); // <-- NOVO: Importa o pacote CORS
+const cors = require('cors'); 
 
 const { compradorRouter } = require('./compradorAuth');
 const { adminRouter } = require('./adminAuth');
+const { productRouter } = require('./productController'); // <-- NOVO: Importa o roteador de Produtos
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ------------------------------------------------------------------
-// CONFIGURAÇÃO CORS: LIBERA TODAS AS ORIGENS
-// Isso permitirá que seu frontend (127.0.0.1) se comunique com o backend (Render)
-// Em produção, você DEVE restringir isso ao seu FRONTEND_URL.
-// ------------------------------------------------------------------
-app.use(cors()); // <-- NOVO: Aplica o middleware CORS sem restrições
-// ------------------------------------------------------------------
+// Configuração CORS: Permite todas as origens
+app.use(cors()); 
 
 // Middlewares
 app.use(bodyParser.json());
@@ -26,9 +22,12 @@ app.use(bodyParser.json());
 app.use('/api/comprador', compradorRouter);
 app.use('/api/admin', adminRouter);
 
+// Rotas de Gerenciamento
+app.use('/api/produtos', productRouter); // <-- NOVO: Rota para Produtos
+
 // Rota de Teste
 app.get('/', (req, res) => {
-    res.send('Servidor Node.js rodando! Use /api/comprador ou /api/admin');
+    res.send('Servidor Node.js rodando! Use /api/comprador, /api/admin ou /api/produtos.');
 });
 
 // Inicia o Servidor
