@@ -1,4 +1,4 @@
-// db.js
+// db.js (Atualizado com Imagens_Produto)
 
 require('dotenv').config();
 const mysql = require('mysql2/promise');
@@ -19,7 +19,6 @@ const pool = mysql.createPool({
 class Database {
     async query(sql, params) {
         try {
-            // Usa pool.execute para segurança contra SQL Injection e performance
             const [rows, fields] = await pool.execute(sql, params);
             return { rows, fields };
         } catch (error) {
@@ -42,7 +41,6 @@ class Database {
             await this.setupDatabase(); // <-- Inicia a verificação/criação das tabelas
         } catch (error) {
             console.error("❌ Falha ao conectar ao MySQL:", error.message);
-            // Encerra o processo se a conexão falhar
             process.exit(1); 
         } finally {
             if (connection) connection.release();
@@ -53,7 +51,6 @@ class Database {
     async setupDatabase() {
         console.log("🛠️ Verificando e criando tabelas...");
         
-        // Comandos CREATE TABLE IF NOT EXISTS para todas as tabelas
         const tableQueries = [
             `
             CREATE TABLE IF NOT EXISTS administradores (
@@ -107,7 +104,17 @@ class Database {
                 FOREIGN KEY (pedido_id) REFERENCES pedidos(id) ON DELETE CASCADE,
                 FOREIGN KEY (produto_id) REFERENCES produtos(id)
             );
+            `,
             `
+            CREATE TABLE IF NOT EXISTS imagens_produto (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                produto_id INT NOT NULL,
+                url VARCHAR(255) NOT NULL,
+                public_id VARCHAR(255),
+                is_main BOOLEAN DEFAULT FALSE,
+                FOREIGN KEY (produto_id) REFERENCES produtos(id) ON DELETE CASCADE
+            );
+            ` // <-- NOVO: Tabela para URLs de Imagens
         ];
 
         try {
@@ -115,7 +122,7 @@ class Database {
                 await pool.execute(sql);
             }
             console.log("✅ Estrutura do Banco de Dados verificada/criada.");
-            await this.createInitialAdmin(); // Cria o usuário mestre se ele não existir
+            await this.createInitialAdmin(); 
         } catch (err) {
             console.error("❌ ERRO FATAL ao criar tabelas:", err);
             process.exit(1); 
@@ -124,11 +131,9 @@ class Database {
     
     // --- Criação do Usuário Mestre (DONO) ---
     async createInitialAdmin() {
-        // ATENÇÃO: EM PRODUÇÃO, ESTES DADOS DEVEM VIR DE VARIÁVEIS DE AMBIENTE SEGURAS!
         const initialEmail = 'admin@dono.com'; 
         const initialPassword = 'senha_mestra_123'; 
         
-        // 1. Verifica se já existe um 'dono' ou se o email inicial está em uso
         const [rows] = await pool.execute('SELECT id FROM administradores WHERE email = ? OR role = "dono"', [initialEmail]);
 
         if (rows.length === 0) {
@@ -142,7 +147,6 @@ class Database {
                 console.log(`\n🔑 USUÁRIO DONO CRIADO:`);
                 console.log(`   Email: ${initialEmail}`);
                 console.log(`   Senha: ${initialPassword}`);
-                console.log("   ⚠️ RECOMENDAÇÃO: Altere esta senha imediatamente após o primeiro login!");
 
             } catch (err) {
                 console.error("❌ Falha ao criar o Dono Mestre inicial:", err);
@@ -152,8 +156,6 @@ class Database {
 }
 
 const db = new Database();
-
-// Tenta verificar a conexão e iniciar o setup ao carregar o servidor
 db.checkConnection();
 
 module.exports = { db, pool };
