@@ -1,4 +1,4 @@
-// adminAuth.js
+// adminAuth.js (CORRIGIDO E COMPLETO)
 
 require('dotenv').config();
 const express = require('express');
@@ -10,8 +10,7 @@ const adminRouter = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET;
 const TABLE = 'administradores';
 
-// --- HIERARQUIA DE CARGOS ---
-// Usada pelo checkPermission para definir quem pode fazer o quê.
+// --- HIERARQUIA DE CARGOS (RBAC) ---
 const roleHierarchy = {
     'dono': 3,
     'gerente': 2,
@@ -24,7 +23,7 @@ const roleHierarchy = {
 
 /**
  * Middleware para verificar o token JWT e autenticar o usuário.
- * Anexa os dados do usuário (incluindo role) em req.user.
+ * Anexa os dados do usuário (id, email, role) em req.user.
  */
 const authMiddleware = (req, res, next) => {
     const authHeader = req.headers.authorization;
@@ -36,7 +35,6 @@ const authMiddleware = (req, res, next) => {
     
     try {
         const decoded = jwt.verify(token, JWT_SECRET);
-        // Anexa os dados decodificados (id, email, role) à requisição
         req.user = decoded; 
         next();
     } catch (error) {
@@ -45,8 +43,7 @@ const authMiddleware = (req, res, next) => {
 };
 
 /**
- * Função geradora de Middleware para verificar se o usuário logado
- * possui a permissão (role) necessária para acessar a rota.
+ * Função geradora de Middleware para verificar a permissão (role) necessária.
  * @param {string} requiredRole - O cargo mínimo necessário ('dono', 'gerente', 'funcionario').
  */
 const checkPermission = (requiredRole) => {
@@ -57,7 +54,7 @@ const checkPermission = (requiredRole) => {
         
         const userRole = req.user.role;
         
-        // Verifica se o cargo do usuário é igual ou superior ao cargo exigido
+        // Verifica se o nível do usuário é suficiente
         if (roleHierarchy[userRole] >= roleHierarchy[requiredRole]) {
             next();
         } else {
@@ -73,7 +70,7 @@ const checkPermission = (requiredRole) => {
 
 /**
  * @route POST /api/admin/login
- * Realiza o login de qualquer administrador (dono, gerente ou funcionário).
+ * Realiza o login, buscando o nome e a role.
  */
 adminRouter.post('/login', async (req, res) => {
     const { email, senha } = req.body;
@@ -83,27 +80,26 @@ adminRouter.post('/login', async (req, res) => {
     }
 
     try {
-        // 1. Buscar usuário por email, incluindo a role
+        // Buscar todos os dados relevantes
         const sql = `SELECT id, nome, email, password_hash, role FROM ${TABLE} WHERE email = ?`;
         const result = await db.query(sql, [email]);
 
-        // MySQL2 retorna um array de arrays no 'rows'
         if (result.rows.length === 0) {
             return res.status(401).json({ message: 'Credenciais inválidas.' });
         }
 
         const admin = result.rows[0];
 
-        // 2. Comparar Senha
+        // Comparar Senha
         const match = await bcrypt.compare(senha, admin.password_hash);
 
         if (!match) {
             return res.status(401).json({ message: 'Credenciais inválidas.' });
         }
 
-        // 3. Gerar Token JWT com a role
+        // Gerar Token JWT (Incluindo nome e role)
         const token = jwt.sign(
-            { id: admin.id, email: admin.email, role: admin.role }, 
+            { id: admin.id, email: admin.email, role: admin.role, nome: admin.nome }, 
             JWT_SECRET, 
             { expiresIn: '1h' } 
         );
@@ -127,21 +123,19 @@ adminRouter.post('/login', async (req, res) => {
 
 /**
  * @route POST /api/admin/novo-funcionario
- * Cria um novo funcionário/admin com cargo. Acesso restrito a 'dono' ou 'gerente'.
+ * Cria novo funcionário/admin. Requer 'gerente' ou 'dono'.
  */
 adminRouter.post('/novo-funcionario', 
     authMiddleware, 
-    checkPermission('gerente'), // Requer Gerente ou Dono
+    checkPermission('gerente'), 
     async (req, res) => {
     
-    // Role padrão é 'funcionario', a menos que seja explicitamente setada
     const { nome, email, senha, role = 'funcionario' } = req.body; 
 
-    // Regra: Somente o 'dono' pode criar outro 'dono'.
+    // Regras de segurança de cargo
     if (role === 'dono' && req.user.role !== 'dono') {
         return res.status(403).json({ message: 'Apenas o Dono Mestre pode criar outra conta Dono.' });
     }
-    // Regra: Não permitir que gerente crie outro gerente ou dono
     if (req.user.role === 'gerente' && roleHierarchy[role] > roleHierarchy['funcionario']) {
         return res.status(403).json({ message: 'Gerentes só podem criar funcionários.' });
     }
@@ -154,7 +148,6 @@ adminRouter.post('/novo-funcionario',
         const saltRounds = 10;
         const passwordHash = await bcrypt.hash(senha, saltRounds);
 
-        // Sintaxe MySQL: usa '?'
         const sql = `INSERT INTO ${TABLE} (nome, email, password_hash, role) VALUES (?, ?, ?, ?)`;
         const result = await db.query(sql, [nome, email, passwordHash, role]);
 
@@ -166,7 +159,6 @@ adminRouter.post('/novo-funcionario',
         });
 
     } catch (error) {
-        // ER_DUP_ENTRY é o código de erro MySQL para UNIQUE constraint
         if (error.code === 'ER_DUP_ENTRY') { 
             return res.status(409).json({ message: 'Email já cadastrado.' });
         }
@@ -178,22 +170,22 @@ adminRouter.post('/novo-funcionario',
 
 /**
  * @route DELETE /api/admin/funcionario/:id
- * Exclui um funcionário pelo ID. Acesso restrito apenas ao 'dono'.
+ * Exclui um funcionário pelo ID. Requer 'dono'.
  */
 adminRouter.delete('/funcionario/:id', 
     authMiddleware, 
-    checkPermission('dono'), // Requer Dono
+    checkPermission('dono'), 
     async (req, res) => {
     
     const adminIdToDelete = parseInt(req.params.id);
 
-    // 1. Prevenção: Dono não pode excluir a si mesmo.
+    // Prevenção: Dono não pode excluir a si mesmo.
     if (adminIdToDelete === req.user.id) {
-        return res.status(403).json({ message: 'Você não pode excluir a sua própria conta de Dono Mestre.' });
+        return res.status(403).json({ message: 'O Dono Mestre não pode excluir a própria conta desta forma.' });
     }
 
     try {
-        // 2. Prevenção: Dono não pode excluir outro Dono (requer processo manual/seguro)
+        // Verifica se o admin a ser excluído é outro Dono
         const checkSql = `SELECT role FROM ${TABLE} WHERE id = ?`;
         const result = await db.query(checkSql, [adminIdToDelete]);
 
@@ -205,7 +197,6 @@ adminRouter.delete('/funcionario/:id',
             return res.status(403).json({ message: 'Você não tem permissão para excluir outra conta Dono Mestre.' });
         }
 
-        // 3. Executa a exclusão
         const deleteSql = `DELETE FROM ${TABLE} WHERE id = ?`;
         const deleteResult = await db.query(deleteSql, [adminIdToDelete]);
 
@@ -223,28 +214,45 @@ adminRouter.delete('/funcionario/:id',
 
 
 // ====================================================================
-// IV. ROTAS DE TESTE PROTEGIDAS
+// IV. ROTAS DE TESTE PROTEGIDAS (CORREÇÃO APLICADA AQUI)
 // ====================================================================
 
 /**
  * @route GET /api/admin/dashboard
- * Rota de teste. Acesso permitido a qualquer administrador (Dono, Gerente, Funcionário).
+ * Rota que fornece os dados completos do usuário para o Dashboard.
  */
-adminRouter.get('/dashboard', authMiddleware, (req, res) => {
-    res.status(200).json({ 
-        message: `Bem-vindo, ${req.user.nome || req.user.email}!`,
-        role: req.user.role,
-        permissao_acesso: 'Concedida a todos os admins.'
-    });
+adminRouter.get('/dashboard', authMiddleware, async (req, res) => {
+    try {
+        // Buscamos o nome completo no DB (caso o nome do JWT seja antigo ou incompleto)
+        const sql = `SELECT nome FROM ${TABLE} WHERE id = ?`;
+        const result = await db.query(sql, [req.user.id]);
+        const nomeCompleto = result.rows.length > 0 ? result.rows[0].nome : req.user.email;
+        
+        // CORREÇÃO: Retorna o objeto completo 'usuario' conforme o frontend espera.
+        return res.status(200).json({ 
+            message: `Acesso ao Dashboard Admin concedido.`,
+            role: req.user.role,
+            usuario: {
+                id: req.user.id,
+                email: req.user.email,
+                role: req.user.role,
+                nome: nomeCompleto
+            }
+        });
+
+    } catch (error) {
+        console.error("Erro ao buscar nome completo do admin:", error);
+        return res.status(500).json({ message: "Erro interno ao buscar dados do dashboard." });
+    }
 });
 
 /**
  * @route GET /api/admin/relatorios-gerenciais
- * Rota de teste. Acesso restrito a 'dono' ou 'gerente'.
+ * Acesso restrito a 'dono' ou 'gerente'.
  */
 adminRouter.get('/relatorios-gerenciais', 
     authMiddleware, 
-    checkPermission('gerente'), // Requer Gerente ou Dono
+    checkPermission('gerente'), 
     (req, res) => {
     res.status(200).json({ 
         message: `Acesso a relatórios concedido!`,
