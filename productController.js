@@ -85,17 +85,18 @@ productRouter.post('/',
     }
 });
 
-
 // ====================================================================
-// B1. Rota: LER/LISTAR Produtos para o Catálogo (Público)
-// * Esta é a rota que a página inicial (index.html) deve chamar.
-// * Filtra por DISPONÍVEL = TRUE.
+// B. Rota: LER/LISTAR Produtos para o Catálogo (Público)
+// * Rota pública que lista apenas produtos DISPONÍVEIS.
 // ====================================================================
 productRouter.get('/', 
-    // ROTA PÚBLICA: Sem middleware de autenticação
+    // ROTA PÚBLICA: NENHUM MIDDLEWARE DE AUTENTICAÇÃO
     async (req, res) => {
 
+    console.log("[API_CATALOGO] Requisição de listagem de produtos públicos recebida.");
+
     try {
+        // Query para selecionar APENAS produtos que estão disponíveis
         const sql = `
             SELECT 
                 p.*, 
@@ -105,6 +106,8 @@ productRouter.get('/',
             ORDER BY p.id DESC
         `;
         const result = await db.query(sql);
+
+        console.log(`[API_CATALOGO] ${result.rows.length} produtos disponíveis encontrados.`);
 
         return res.status(200).json({ 
             message: 'Lista de produtos para o catálogo retornada com sucesso.',
@@ -116,7 +119,6 @@ productRouter.get('/',
         return res.status(500).json({ message: 'Erro interno ao buscar produtos.' });
     }
 });
-
 
 // ====================================================================
 // B2. Rota: LER/LISTAR Todos os Produtos para o Admin (Gerenciamento)
