@@ -4,7 +4,7 @@ require('dotenv').config();
 const mysql = require('mysql2/promise');
 const bcrypt = require('bcrypt');
 
-// --- Configurações de Conexão (Mantidas) ---
+// --- Configurações do Pool de Conexões MySQL ---
 const pool = mysql.createPool({
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
@@ -15,11 +15,11 @@ const pool = mysql.createPool({
     queueLimit: 0
 });
 
-// --- Classes de Funções ---
-
+// --- Classe Database para Execução de Queries ---
 class Database {
     async query(sql, params) {
         try {
+            // Usa pool.execute para segurança contra SQL Injection e performance
             const [rows, fields] = await pool.execute(sql, params);
             return { rows, fields };
         } catch (error) {
@@ -32,40 +32,40 @@ class Database {
         return await pool.getConnection();
     }
     
+    // Verifica a conexão e inicia o setup do DB
     async checkConnection() {
         let connection;
         try {
             connection = await pool.getConnection();
             await connection.ping();
             console.log("✅ Conexão MySQL estabelecida com sucesso!");
-            await this.setupDatabase(); // <-- Chama a criação das tabelas
+            await this.setupDatabase(); // <-- Inicia a verificação/criação das tabelas
         } catch (error) {
             console.error("❌ Falha ao conectar ao MySQL:", error.message);
-            throw error;
+            // Encerra o processo se a conexão falhar
+            process.exit(1); 
         } finally {
             if (connection) connection.release();
         }
     }
 
-    // --- NOVO: Lógica de Criação das Tabelas ---
+    // --- Lógica de Criação de Tabelas (Migrations Simples) ---
     async setupDatabase() {
         console.log("🛠️ Verificando e criando tabelas...");
         
-        // 1. Tabela Administradores (Contém o DONO e os FUNCIONÁRIOS)
-        const createAdminsTable = `
+        // Comandos CREATE TABLE IF NOT EXISTS para todas as tabelas
+        const tableQueries = [
+            `
             CREATE TABLE IF NOT EXISTS administradores (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 nome VARCHAR(100) NOT NULL,
                 email VARCHAR(100) NOT NULL UNIQUE,
                 password_hash VARCHAR(255) NOT NULL,
-                -- Role: 'dono' (pode excluir outros admins), 'gerente' (pode criar/editar), 'funcionario' (apenas gerencia pedidos)
                 role ENUM('dono', 'gerente', 'funcionario') DEFAULT 'funcionario', 
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
-        `;
-        
-        // 2. Tabela Compradores
-        const createCompradoresTable = `
+            `,
+            `
             CREATE TABLE IF NOT EXISTS compradores (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 nome VARCHAR(100) NOT NULL,
@@ -73,10 +73,8 @@ class Database {
                 password_hash VARCHAR(255) NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
-        `;
-
-        // 3. Tabela Produtos (Estrutura básica para o futuro CRUD)
-        const createProdutosTable = `
+            `,
+            `
             CREATE TABLE IF NOT EXISTS produtos (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 nome VARCHAR(100) NOT NULL,
@@ -87,40 +85,50 @@ class Database {
                 created_by INT,
                 FOREIGN KEY (created_by) REFERENCES administradores(id)
             );
-        `;
-        
-        // 4. Tabela Pedidos (Estrutura básica para o futuro CRUD)
-        const createPedidosTable = `
+            `,
+            `
             CREATE TABLE IF NOT EXISTS pedidos (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 comprador_id INT NOT NULL,
-                status ENUM('novo', 'preparando', 'saiu_entrega', 'entregue', 'cancelado') DEFAULT 'novo',
+                status ENUM('novo', 'aceito', 'preparando', 'saiu_entrega', 'entregue', 'cancelado') DEFAULT 'novo',
                 total DECIMAL(10, 2) NOT NULL,
                 endereco TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (comprador_id) REFERENCES compradores(id)
             );
-        `;
+            `,
+            `
+            CREATE TABLE IF NOT EXISTS itens_pedido (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                pedido_id INT NOT NULL,
+                produto_id INT NOT NULL,
+                quantidade INT NOT NULL,
+                preco_unitario DECIMAL(10, 2) NOT NULL,
+                FOREIGN KEY (pedido_id) REFERENCES pedidos(id) ON DELETE CASCADE,
+                FOREIGN KEY (produto_id) REFERENCES produtos(id)
+            );
+            `
+        ];
 
         try {
-            await pool.execute(createAdminsTable);
-            await pool.execute(createCompradoresTable);
-            await pool.execute(createProdutosTable);
-            await pool.execute(createPedidosTable);
+            for (const sql of tableQueries) {
+                await pool.execute(sql);
+            }
             console.log("✅ Estrutura do Banco de Dados verificada/criada.");
-            await this.createInitialAdmin(); // <-- Chama a criação do DONO
+            await this.createInitialAdmin(); // Cria o usuário mestre se ele não existir
         } catch (err) {
             console.error("❌ ERRO FATAL ao criar tabelas:", err);
-            // Em caso de erro na criação das tabelas, o servidor não deve iniciar
             process.exit(1); 
         }
     }
     
-    // --- NOVO: Criação do Usuário Mestre (DONO) ---
+    // --- Criação do Usuário Mestre (DONO) ---
     async createInitialAdmin() {
-        const initialEmail = 'admin@dono.com'; // Use um email padrão seguro ou de uma ENV
-        const initialPassword = 'senha_mestra_123'; // Use uma senha inicial segura
+        // ATENÇÃO: EM PRODUÇÃO, ESTES DADOS DEVEM VIR DE VARIÁVEIS DE AMBIENTE SEGURAS!
+        const initialEmail = 'admin@dono.com'; 
+        const initialPassword = 'senha_mestra_123'; 
         
-        // 1. Verifica se já existe algum 'dono' ou se o email inicial já está em uso
+        // 1. Verifica se já existe um 'dono' ou se o email inicial está em uso
         const [rows] = await pool.execute('SELECT id FROM administradores WHERE email = ? OR role = "dono"', [initialEmail]);
 
         if (rows.length === 0) {
@@ -131,8 +139,10 @@ class Database {
                 const sql = `INSERT INTO administradores (nome, email, password_hash, role) VALUES (?, ?, ?, ?)`;
                 await pool.execute(sql, ['Dono Mestre', initialEmail, passwordHash, 'dono']);
                 
-                console.log(`🔑 Usuário Dono Mestre criado: Email: ${initialEmail}, Senha: ${initialPassword}`);
-                console.log("⚠️ ATENÇÃO: Altere esta senha imediatamente após o primeiro login!");
+                console.log(`\n🔑 USUÁRIO DONO CRIADO:`);
+                console.log(`   Email: ${initialEmail}`);
+                console.log(`   Senha: ${initialPassword}`);
+                console.log("   ⚠️ RECOMENDAÇÃO: Altere esta senha imediatamente após o primeiro login!");
 
             } catch (err) {
                 console.error("❌ Falha ao criar o Dono Mestre inicial:", err);
@@ -143,7 +153,7 @@ class Database {
 
 const db = new Database();
 
-// Tenta verificar a conexão e iniciar o setup
+// Tenta verificar a conexão e iniciar o setup ao carregar o servidor
 db.checkConnection();
 
 module.exports = { db, pool };
