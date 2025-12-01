@@ -1,4 +1,4 @@
-// productController.js (Corrigido para Acesso Público/Comprador)
+// productController.js (Corrigido com Rotas Separadas para Admin e Público)
 
 require('dotenv').config();
 const express = require('express');
@@ -14,7 +14,6 @@ const ITEMS_TABLE = 'imagens_produto';
 
 // ====================================================================
 // A. Rota: CRIAR Produto (COM UPLOAD DE MÚLTIPLAS IMAGENS)
-// ... (Rota A permanece inalterada)
 // ====================================================================
 productRouter.post('/', 
     authMiddleware, 
@@ -22,7 +21,6 @@ productRouter.post('/',
     upload.array('imagens', 10), 
     async (req, res) => {
 
-    // Dados de texto vêm em req.body
     const { nome, descricao, preco, categoria, disponivel = true } = req.body;
     const created_by = req.user.id;
     const files = req.files; 
@@ -33,7 +31,6 @@ productRouter.post('/',
     
     let connection;
     try {
-        // 1. Validação
         const precoNumerico = parseFloat(preco);
         if (isNaN(precoNumerico)) {
              return res.status(400).json({ message: 'Preço deve ser um valor numérico.' });
@@ -42,7 +39,6 @@ productRouter.post('/',
         connection = await db.getConnection();
         await connection.query('START TRANSACTION');
 
-        // 2. Criação do Produto Principal
         const productSql = `
             INSERT INTO ${TABLE} (nome, descricao, preco, categoria, disponivel, created_by) 
             VALUES (?, ?, ?, ?, ?, ?)
@@ -52,9 +48,7 @@ productRouter.post('/',
         const [productResult] = await connection.execute(productSql, productParams);
         const newProductId = productResult.insertId;
 
-        // 3. Upload e Inserção das Imagens
         if (files && files.length > 0) {
-            // Executa o upload de todos os arquivos em paralelo
             const uploadPromises = files.map(file => uploadToCloudinary(file));
             const imageResults = await Promise.all(uploadPromises);
 
@@ -93,16 +87,15 @@ productRouter.post('/',
 
 
 // ====================================================================
-// B. Rota: LER/LISTAR Todos os Produtos (CORRIGIDO PARA ACESSO PÚBLICO)
-// Acesso público. NENHUM middleware de autenticação/permissão.
+// B1. Rota: LER/LISTAR Produtos para o Catálogo (Público)
+// * Esta é a rota que a página inicial (index.html) deve chamar.
+// * Filtra por DISPONÍVEL = TRUE.
 // ====================================================================
 productRouter.get('/', 
-    // OBS: O frontend index.html deve obter o nome do usuário através de outra rota (/api/comprador/me), 
-    // e esta rota é apenas para carregar o catálogo de produtos.
+    // ROTA PÚBLICA: Sem middleware de autenticação
     async (req, res) => {
 
     try {
-        // Query para selecionar APENAS produtos que estão disponíveis e a URL da imagem principal
         const sql = `
             SELECT 
                 p.*, 
@@ -114,34 +107,75 @@ productRouter.get('/',
         const result = await db.query(sql);
 
         return res.status(200).json({ 
-            message: 'Lista de produtos retornada com sucesso.',
+            message: 'Lista de produtos para o catálogo retornada com sucesso.',
             produtos: result.rows
         });
 
     } catch (error) {
-        console.error('Erro ao listar produtos (público):', error);
+        console.error('Erro ao listar produtos (catálogo):', error);
         return res.status(500).json({ message: 'Erro interno ao buscar produtos.' });
     }
 });
 
+
+// ====================================================================
+// B2. Rota: LER/LISTAR Todos os Produtos para o Admin (Gerenciamento)
+// * Esta é a rota que o painel 'admin_products.html' deve chamar.
+// * Mostra TODOS os produtos, disponíveis ou não.
+// ====================================================================
+productRouter.get('/admin', 
+    authMiddleware,             
+    checkPermission('funcionario'), 
+    async (req, res) => {
+
+    try {
+        const sql = `
+            SELECT 
+                p.*, 
+                a.nome AS nome_criador,
+                (SELECT url FROM ${ITEMS_TABLE} WHERE produto_id = p.id AND is_main = TRUE LIMIT 1) AS imagem_principal
+            FROM ${TABLE} p
+            LEFT JOIN administradores a ON p.created_by = a.id
+            ORDER BY p.id DESC
+        `;
+        const result = await db.query(sql);
+
+        return res.status(200).json({ 
+            message: 'Lista completa de produtos para o administrador.',
+            produtos: result.rows
+        });
+
+    } catch (error) {
+        console.error('Erro ao listar produtos (admin):', error);
+        return res.status(500).json({ message: 'Erro interno ao buscar produtos.' });
+    }
+});
+
+
 // ====================================================================
 // C. Rota: LER Produto por ID
 // ====================================================================
-// Para a página de detalhes do produto, você pode mantê-la protegida apenas por Comprador/Admin Auth
-// ou torná-la pública como a lista, dependendo da sua regra de negócio.
 productRouter.get('/:id', 
-    compradorAuthMiddleware, // Mantendo a proteção mínima para o comprador logado
+    // Pode ser protegido por compradorAuthMiddleware ou AdminAuthMiddleware
+    (req, res, next) => {
+        const isPublicCall = req.headers.authorization && !req.headers.authorization.includes('adminToken');
+        if (isPublicCall) {
+            return compradorAuthMiddleware(req, res, next);
+        }
+        return authMiddleware(req, res, next); // Assume-se que o admin está buscando detalhes
+    },
     async (req, res) => {
     
     const productId = req.params.id;
 
     try {
-        // Busca o produto e TODAS as imagens
         const sql = `
             SELECT 
                 p.*, 
+                a.nome AS nome_criador,
                 (SELECT JSON_ARRAYAGG(JSON_OBJECT('url', ip.url, 'is_main', ip.is_main)) FROM ${ITEMS_TABLE} ip WHERE ip.produto_id = p.id) AS imagens_json
             FROM ${TABLE} p
+            LEFT JOIN administradores a ON p.created_by = a.id
             WHERE p.id = ?
         `;
         const result = await db.query(sql, [productId]);
@@ -151,7 +185,12 @@ productRouter.get('/:id',
         }
         
         const produto = result.rows[0];
-        produto.imagens = JSON.parse(produto.imagens_json); 
+        // JSON.parse pode falhar se o resultado for NULL.
+        try {
+            produto.imagens = produto.imagens_json ? JSON.parse(produto.imagens_json) : [];
+        } catch (e) {
+            produto.imagens = [];
+        }
         delete produto.imagens_json;
 
         return res.status(200).json({ produto });
@@ -165,7 +204,6 @@ productRouter.get('/:id',
 
 // ====================================================================
 // D. Rota: ATUALIZAR Produto (PUT)
-// ... (Rota D permanece inalterada, requer gerente)
 // ====================================================================
 productRouter.put('/:id', 
     authMiddleware, 
@@ -175,7 +213,6 @@ productRouter.put('/:id',
     const productId = req.params.id;
     const { nome, descricao, preco, categoria, disponivel } = req.body;
     
-    // Constrói a query dinamicamente
     let updates = [];
     let params = [];
 
@@ -216,7 +253,6 @@ productRouter.put('/:id',
 
 // ====================================================================
 // E. Rota: DELETAR Produto
-// ... (Rota E permanece inalterada, requer gerente)
 // ====================================================================
 productRouter.delete('/:id', 
     authMiddleware, 
