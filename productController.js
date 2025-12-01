@@ -1,4 +1,4 @@
-// productController.js (Corrigido para Admin Auth)
+// productController.js (Corrigido para Acesso Público/Comprador)
 
 require('dotenv').config();
 const express = require('express');
@@ -6,8 +6,7 @@ const { db } = require('./db');
 // Importa as funções de upload e os middlewares
 const { upload, uploadToCloudinary } = require('./upload'); 
 const { authMiddleware, checkPermission } = require('./adminAuth'); 
-// O compradorAuthMiddleware não é mais necessário nesta rota
-// const { compradorAuthMiddleware } = require('./compradorAuth'); 
+const { compradorAuthMiddleware } = require('./compradorAuth'); 
 
 const productRouter = express.Router();
 const TABLE = 'produtos';
@@ -15,18 +14,18 @@ const ITEMS_TABLE = 'imagens_produto';
 
 // ====================================================================
 // A. Rota: CRIAR Produto (COM UPLOAD DE MÚLTIPLAS IMAGENS)
-// Requer autenticação e permissão de 'gerente' ou superior.
+// ... (Rota A permanece inalterada)
 // ====================================================================
 productRouter.post('/', 
     authMiddleware, 
     checkPermission('gerente'), 
-    upload.array('imagens', 10), // Usa Multer para o campo 'imagens', até 10 arquivos
+    upload.array('imagens', 10), 
     async (req, res) => {
 
     // Dados de texto vêm em req.body
     const { nome, descricao, preco, categoria, disponivel = true } = req.body;
     const created_by = req.user.id;
-    const files = req.files; // Arquivos enviados (buffers)
+    const files = req.files; 
 
     if (!nome || !preco) {
         return res.status(400).json({ message: 'Nome e Preço são campos obrigatórios.' });
@@ -61,7 +60,7 @@ productRouter.post('/',
 
             for (let i = 0; i < imageResults.length; i++) {
                 const img = imageResults[i];
-                const is_main = i === 0; // Define a primeira imagem como principal
+                const is_main = i === 0; 
                 
                 const imgSql = `
                     INSERT INTO ${ITEMS_TABLE} (produto_id, url, public_id, is_main)
@@ -71,7 +70,7 @@ productRouter.post('/',
             }
         }
 
-        await connection.query('COMMIT'); // Finaliza a transação
+        await connection.query('COMMIT'); 
 
         return res.status(201).json({ 
             message: 'Produto e imagens criados com sucesso!',
@@ -82,7 +81,6 @@ productRouter.post('/',
         if (connection) await connection.query('ROLLBACK');
         console.error('Erro ao criar produto e imagens:', error);
         
-        // Trata erros específicos do Multer/Validação
         if (error.message.includes('Apenas arquivos') || error.message.includes('too large') || error.message.includes('files')) {
             return res.status(400).json({ message: error.message });
         }
@@ -95,23 +93,23 @@ productRouter.post('/',
 
 
 // ====================================================================
-// B. Rota: LER/LISTAR Todos os Produtos (CORRIGIDO PARA ADMIN)
-// Agora requer autenticação de Admin (Funcionário ou superior).
+// B. Rota: LER/LISTAR Todos os Produtos (CORRIGIDO PARA ACESSO PÚBLICO)
+// Acesso público. NENHUM middleware de autenticação/permissão.
 // ====================================================================
 productRouter.get('/', 
-    authMiddleware,             // 1. Garante que o token é válido e popula req.user (incluindo a 'role')
-    checkPermission('funcionario'), // 2. Garante que o usuário tem pelo menos a role 'funcionario'
+    // OBS: O frontend index.html deve obter o nome do usuário através de outra rota (/api/comprador/me), 
+    // e esta rota é apenas para carregar o catálogo de produtos.
     async (req, res) => {
 
     try {
-        // Query para selecionar todos os produtos e a URL da imagem principal
+        // Query para selecionar APENAS produtos que estão disponíveis e a URL da imagem principal
         const sql = `
             SELECT 
                 p.*, 
-                a.nome AS nome_criador,
                 (SELECT url FROM ${ITEMS_TABLE} WHERE produto_id = p.id AND is_main = TRUE LIMIT 1) AS imagem_principal
             FROM ${TABLE} p
-            LEFT JOIN administradores a ON p.created_by = a.id
+            WHERE p.disponivel = TRUE 
+            ORDER BY p.id DESC
         `;
         const result = await db.query(sql);
 
@@ -121,7 +119,7 @@ productRouter.get('/',
         });
 
     } catch (error) {
-        console.error('Erro ao listar produtos:', error);
+        console.error('Erro ao listar produtos (público):', error);
         return res.status(500).json({ message: 'Erro interno ao buscar produtos.' });
     }
 });
@@ -129,8 +127,10 @@ productRouter.get('/',
 // ====================================================================
 // C. Rota: LER Produto por ID
 // ====================================================================
+// Para a página de detalhes do produto, você pode mantê-la protegida apenas por Comprador/Admin Auth
+// ou torná-la pública como a lista, dependendo da sua regra de negócio.
 productRouter.get('/:id', 
-    authMiddleware, // Acesso restrito a admins no painel (pode ser ajustado para compradorAuthMiddleware)
+    compradorAuthMiddleware, // Mantendo a proteção mínima para o comprador logado
     async (req, res) => {
     
     const productId = req.params.id;
@@ -140,10 +140,8 @@ productRouter.get('/:id',
         const sql = `
             SELECT 
                 p.*, 
-                a.nome AS nome_criador,
                 (SELECT JSON_ARRAYAGG(JSON_OBJECT('url', ip.url, 'is_main', ip.is_main)) FROM ${ITEMS_TABLE} ip WHERE ip.produto_id = p.id) AS imagens_json
             FROM ${TABLE} p
-            JOIN administradores a ON p.created_by = a.id
             WHERE p.id = ?
         `;
         const result = await db.query(sql, [productId]);
@@ -153,7 +151,7 @@ productRouter.get('/:id',
         }
         
         const produto = result.rows[0];
-        produto.imagens = JSON.parse(produto.imagens_json); // Converte o JSON string em objeto
+        produto.imagens = JSON.parse(produto.imagens_json); 
         delete produto.imagens_json;
 
         return res.status(200).json({ produto });
@@ -167,8 +165,7 @@ productRouter.get('/:id',
 
 // ====================================================================
 // D. Rota: ATUALIZAR Produto (PUT)
-// Requer autenticação e permissão de 'gerente' ou superior.
-// ATENÇÃO: Esta rota só atualiza os campos de texto. O gerenciamento de imagens é separado.
+// ... (Rota D permanece inalterada, requer gerente)
 // ====================================================================
 productRouter.put('/:id', 
     authMiddleware, 
@@ -219,8 +216,7 @@ productRouter.put('/:id',
 
 // ====================================================================
 // E. Rota: DELETAR Produto
-// Requer autenticação e permissão de 'gerente' ou superior.
-// ATENÇÃO: Em produção, o DELETE deve limpar as imagens no Cloudinary.
+// ... (Rota E permanece inalterada, requer gerente)
 // ====================================================================
 productRouter.delete('/:id', 
     authMiddleware, 
@@ -231,14 +227,9 @@ productRouter.delete('/:id',
     let connection;
 
     try {
-        // Em um cenário real, aqui você buscaria os public_ids das imagens
-        // e usaria o SDK do Cloudinary para deletá-las antes de deletar do DB.
         
         connection = await db.getConnection();
         await connection.query('START TRANSACTION');
-
-        // O ON DELETE CASCADE na tabela imagens_produto deve limpar as imagens
-        // automaticamente, mas deletar no Cloudinary é manual.
 
         const deleteSql = `DELETE FROM ${TABLE} WHERE id = ?`;
         const [deleteResult] = await connection.execute(deleteSql, [productId]);
