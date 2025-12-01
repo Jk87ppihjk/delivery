@@ -1,4 +1,4 @@
-// db.js (Atualizado com Lógica de Migração de Colunas)
+// db.js (COMPLETO: Migração de Colunas + Correção de ECONNRESET)
 
 require('dotenv').config();
 const mysql = require('mysql2/promise');
@@ -12,7 +12,10 @@ const pool = mysql.createPool({
     database: process.env.DB_NAME,
     waitForConnections: true,
     connectionLimit: 10,
-    queueLimit: 0
+    queueLimit: 0,
+    // CORREÇÃO DE CONEXÃO: Adiciona keep-alive para evitar 'read ECONNRESET'
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 0 
 });
 
 // --- Classe Database para Execução de Queries ---
