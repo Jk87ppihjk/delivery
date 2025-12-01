@@ -196,6 +196,51 @@ pedidoRouter.get('/admin', adminAuthMiddleware, async (req, res) => {
     }
 });
 
+/**
+ * @route GET /api/pedidos/admin/:id (Detalha um pedido - Admin)
+ * CORREÇÃO: Nova rota para detalhar pedidos no painel Admin, incluindo itens e dados do comprador.
+ */
+pedidoRouter.get('/admin/:id', adminAuthMiddleware, checkPermission('funcionario'), async (req, res) => {
+    const pedidoId = req.params.id;
+
+    try {
+        // 1. Busca o pedido e informações do comprador
+        const pedidoSql = `
+            SELECT 
+                p.id, p.total, p.status, p.endereco, p.created_at, 
+                c.nome AS comprador_nome, c.email AS comprador_email
+            FROM ${TABLE} p
+            JOIN compradores c ON p.comprador_id = c.id
+            WHERE p.id = ?
+        `;
+        const pedidoResult = await db.query(pedidoSql, [pedidoId]);
+
+        if (pedidoResult.rows.length === 0) {
+            return res.status(404).json({ message: 'Pedido não encontrado.' });
+        }
+
+        const pedido = pedidoResult.rows[0];
+
+        // 2. Busca os itens do pedido
+        const itensSql = `
+            SELECT 
+                i.quantidade, i.preco_unitario, p.nome AS produto_nome 
+            FROM ${ITEMS_TABLE} i
+            JOIN produtos p ON i.produto_id = p.id
+            WHERE i.pedido_id = ?
+        `;
+        const itensResult = await db.query(itensSql, [pedidoId]);
+
+        pedido.itens = itensResult.rows;
+
+        return res.status(200).json({ pedido });
+
+    } catch (error) {
+        console.error('Erro ao detalhar pedido (Admin):', error);
+        return res.status(500).json({ message: 'Erro interno ao buscar detalhes do pedido.' });
+    }
+});
+
 
 /**
  * @route PUT /api/pedidos/admin/:id/status
