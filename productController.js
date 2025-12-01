@@ -1,4 +1,4 @@
-// productController.js (Atualizado para Cloudinary/Multer)
+// productController.js (Corrigido para Admin Auth)
 
 require('dotenv').config();
 const express = require('express');
@@ -6,7 +6,8 @@ const { db } = require('./db');
 // Importa as funções de upload e os middlewares
 const { upload, uploadToCloudinary } = require('./upload'); 
 const { authMiddleware, checkPermission } = require('./adminAuth'); 
-const { compradorAuthMiddleware } = require('./compradorAuth'); // Necessário para listar produtos
+// O compradorAuthMiddleware não é mais necessário nesta rota
+// const { compradorAuthMiddleware } = require('./compradorAuth'); 
 
 const productRouter = express.Router();
 const TABLE = 'produtos';
@@ -94,23 +95,12 @@ productRouter.post('/',
 
 
 // ====================================================================
-// B. Rota: LER/LISTAR Todos os Produtos 
-// Protegido tanto para Admin quanto para Comprador.
+// B. Rota: LER/LISTAR Todos os Produtos (CORRIGIDO PARA ADMIN)
+// Agora requer autenticação de Admin (Funcionário ou superior).
 // ====================================================================
 productRouter.get('/', 
-    // Permite que admins e compradores listem, verificando os dois tokens
-    (req, res, next) => {
-        // Verifica se há um token de admin ou comprador, e se houver, tenta autenticar
-        const token = req.headers.authorization;
-        if (token) {
-            // Se for admin:
-            if (req.originalUrl.includes('/api/admin/')) return authMiddleware(req, res, next);
-            // Se for comprador (via index.html):
-            return compradorAuthMiddleware(req, res, next);
-        }
-        // Se não houver token, o acesso não é permitido (nossas rotas são sempre protegidas)
-        return res.status(401).json({ message: "Autenticação necessária." });
-    },
+    authMiddleware,             // 1. Garante que o token é válido e popula req.user (incluindo a 'role')
+    checkPermission('funcionario'), // 2. Garante que o usuário tem pelo menos a role 'funcionario'
     async (req, res) => {
 
     try {
