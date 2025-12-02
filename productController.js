@@ -107,20 +107,34 @@ productRouter.get('/',
     async (req, res) => {
 
     try {
-        // Query para selecionar APENAS produtos que estão disponíveis
+        // Query para selecionar APENAS produtos que estão disponíveis e agrega todas as imagens
         const sql = `
             SELECT 
                 p.*, 
-                (SELECT url FROM ${ITEMS_TABLE} WHERE produto_id = p.id AND is_main = TRUE LIMIT 1) AS imagem_principal
+                (SELECT JSON_ARRAYAGG(JSON_OBJECT('url', ip.url, 'is_main', ip.is_main)) FROM ${ITEMS_TABLE} ip WHERE ip.produto_id = p.id) AS imagens_json
             FROM ${TABLE} p
             WHERE p.disponivel = TRUE 
             ORDER BY p.id DESC
         `;
         const result = await db.query(sql);
 
+        // Mapeamento para processar o JSON das imagens (necessário porque o resultado é uma string JSON)
+        const produtos = result.rows.map(produto => {
+            try {
+                // Converte a string JSON em um array de objetos de imagem
+                produto.imagens = produto.imagens_json ? JSON.parse(produto.imagens_json) : [];
+            } catch (e) {
+                produto.imagens = [];
+            }
+            delete produto.imagens_json;
+            // Adiciona imagem_principal para compatibilidade com o resto do código, se necessário
+            produto.imagem_principal = produto.imagens.find(img => img.is_main)?.url || null;
+            return produto;
+        });
+
         return res.status(200).json({ 
             message: 'Lista de produtos para o catálogo retornada com sucesso.',
-            produtos: result.rows
+            produtos: produtos // Retorna a lista de produtos processada
         });
 
     } catch (error) {
